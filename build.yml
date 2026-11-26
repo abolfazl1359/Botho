@@ -1,0 +1,183 @@
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Create project
+        run: |
+          mkdir -p app/src/main/java/ir/bot/control
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "BotControl"
+          include ":app"
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins { id "com.android.application" version "8.7.3" }
+          android {
+              namespace "ir.bot.control"
+              compileSdk 34
+              defaultConfig {
+                  applicationId "ir.bot.control"
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+          }
+          tasks.withType(JavaCompile).configureEach { options.encoding = "UTF-8" }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+              <queries><package android:name="com.termux" /></queries>
+              <application
+                  android:label="کنترل ربات"
+                  android:icon="@android:drawable/ic_lock_power_off"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/java/ir/bot/control/MainActivity.java <<'EOF'
+          package ir.bot.control;
+
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.content.pm.PackageManager;
+          import android.graphics.Color;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+
+          public class MainActivity extends Activity {
+              private static final String PERMISSION = "com.termux.permission.RUN_COMMAND";
+              private static final String CHECK =
+                  "[ -n \"$pid\" ] && grep -qa run.py /proc/$pid/cmdline 2>/dev/null";
+              private static final String START =
+                  "termux-wake-lock\n"
+                  + "proot-distro login ubuntu -- bash -c '\n"
+                  + "cd /root/highrise_bot || exit 1\n"
+                  + "pid=$(cat bot.pid 2>/dev/null)\n"
+                  + "if " + CHECK + "; then exit 0; fi\n"
+                  + "echo $$ > bot.pid\n"
+                  + "exec venv/bin/python run.py > bot.log 2>&1\n"
+                  + "'\n";
+              private static final String STOP =
+                  "proot-distro login ubuntu -- bash -c '\n"
+                  + "cd /root/highrise_bot || exit 1\n"
+                  + "pid=$(cat bot.pid 2>/dev/null)\n"
+                  + "if " + CHECK + "; then kill -INT $pid; sleep 2; kill -9 $pid 2>/dev/null; fi\n"
+                  + "rm -f bot.pid\n"
+                  + "'\n"
+                  + "termux-wake-unlock\n";
+
+              private TextView status;
+
+              @Override
+              protected void onCreate(Bundle state) {
+                  super.onCreate(state);
+                  LinearLayout page = new LinearLayout(this);
+                  page.setOrientation(LinearLayout.VERTICAL);
+                  page.setGravity(Gravity.CENTER);
+                  page.setBackgroundColor(Color.rgb(23, 18, 58));
+                  page.setPadding(60, 60, 60, 60);
+
+                  TextView title = text("کنترل ربات هایرایز", 24);
+                  status = text("یک دکمه را بزن", 16);
+                  page.addView(title);
+                  page.addView(button("روشن کردن ربات", Color.rgb(35, 170, 110), new View.OnClickListener() {
+                      public void onClick(View v) { run(START, "فرمان روشن شدن فرستاده شد. چند ثانیه صبر کن."); }
+                  }));
+                  page.addView(button("خاموش کردن ربات", Color.rgb(210, 60, 80), new View.OnClickListener() {
+                      public void onClick(View v) { run(STOP, "فرمان خاموش شدن فرستاده شد."); }
+                  }));
+                  page.addView(status);
+                  setContentView(page);
+              }
+
+              private TextView text(String value, int size) {
+                  TextView view = new TextView(this);
+                  view.setText(value);
+                  view.setTextSize(size);
+                  view.setTextColor(Color.WHITE);
+                  view.setGravity(Gravity.CENTER);
+                  view.setPadding(0, 30, 0, 30);
+                  return view;
+              }
+
+              private Button button(String label, int color, View.OnClickListener action) {
+                  Button view = new Button(this);
+                  view.setText(label);
+                  view.setTextSize(20);
+                  view.setTextColor(Color.WHITE);
+                  view.setBackgroundColor(color);
+                  LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(
+                      LinearLayout.LayoutParams.MATCH_PARENT, 200);
+                  size.setMargins(0, 20, 0, 20);
+                  view.setLayoutParams(size);
+                  view.setOnClickListener(action);
+                  return view;
+              }
+
+              private void run(String script, String done) {
+                  if (checkSelfPermission(PERMISSION) != PackageManager.PERMISSION_GRANTED) {
+                      requestPermissions(new String[]{PERMISSION}, 1);
+                      status.setText("اجازهٔ اجرای فرمان در Termux را بده و دوباره بزن.");
+                      return;
+                  }
+                  Intent intent = new Intent("com.termux.RUN_COMMAND");
+                  intent.setClassName("com.termux", "com.termux.app.RunCommandService");
+                  intent.putExtra("com.termux.RUN_COMMAND_PATH",
+                      "/data/data/com.termux/files/usr/bin/bash");
+                  intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", new String[]{"-c", script});
+                  intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true);
+                  try {
+                      Object found = Build.VERSION.SDK_INT >= 26
+                          ? startForegroundService(intent) : startService(intent);
+                      status.setText(found != null ? done : "Termux پیدا نشد.");
+                  } catch (Exception error) {
+                      status.setText("خطا: " + error.getMessage());
+                  }
+              }
+          }
+          EOF
+
+      - name: Build
+        run: gradle :app:assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BotControl-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
